@@ -203,6 +203,14 @@ class SshManager {
         return exec("tmux resize-window -t ${shellEscape(sessionName)} -x $safeCols -y $safeRows")
     }
 
+    suspend fun nextWindow(sessionName: String): Result<String> {
+        return exec("tmux next-window -t ${shellEscape(sessionName)}")
+    }
+
+    suspend fun previousWindow(sessionName: String): Result<String> {
+        return exec("tmux previous-window -t ${shellEscape(sessionName)}")
+    }
+
     suspend fun sendKeys(sessionName: String, keys: String): Result<String> {
         return exec("tmux send-keys -t ${shellEscape(sessionName)} -l ${shellEscape(keys)} && tmux send-keys -t ${shellEscape(sessionName)} Enter")
     }

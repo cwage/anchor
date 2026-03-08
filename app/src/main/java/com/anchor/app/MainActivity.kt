@@ -130,6 +130,8 @@ fun AnchorApp(viewModel: AnchorViewModel = viewModel()) {
                 paneContent = state.paneContent,
                 onSendKeys = viewModel::sendKeys,
                 onResizePane = viewModel::resizePane,
+                onNextWindow = viewModel::nextWindow,
+                onPreviousWindow = viewModel::previousWindow,
                 onBack = viewModel::closeSession
             )
         }

@@ -116,6 +116,7 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
         val host = pendingHost ?: return
         when (val result = ssh.connect(host.hostname, host.port, host.username, pendingPassword, hostKeyAccepted)) {
             is SshManager.ConnectResult.Success -> {
+                pendingPassword = null
                 hostDao.updateLastConnected(host.id, System.currentTimeMillis())
                 hostLabel = "${host.username}@${host.hostname}"
                 _uiState.value = UiState.SessionList(isLoading = true, hostLabel = host.label)
@@ -134,6 +135,7 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
             is SshManager.ConnectResult.Failed -> {
                 val hosts = hostDao.getAll().first()
                 val needsPassword = result.error.contains("Auth fail", ignoreCase = true) && pendingPassword == null
+                pendingPassword = null
                 _uiState.value = UiState.HostList(
                     hosts = hosts,
                     hasKey = keyManager.hasKey(),
@@ -233,6 +235,7 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
     fun goHome() {
         stopPolling()
         ssh.disconnect()
+        pendingPassword = null
         viewModelScope.launch {
             val hosts = hostDao.getAll().first()
             _uiState.value = UiState.HostList(hosts = hosts, hasKey = keyManager.hasKey())
@@ -291,6 +294,7 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
         val hosts = hostDao.getAll().first()
         when (val result = ssh.connect(host.hostname, host.port, host.username, pendingPassword, hostKeyAccepted)) {
             is SshManager.ConnectResult.Success -> {
+                pendingPassword = null
                 val deployResult = keyManager.deployKeyViaSession(ssh)
                 ssh.disconnect()
                 deployResult.fold(
@@ -312,6 +316,7 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
                 )
             }
             is SshManager.ConnectResult.Failed -> {
+                pendingPassword = null
                 _uiState.value = UiState.KeySetup(hasKey = keyManager.hasKey(), publicKey = keyManager.getPublicKeyString(), error = result.error, hosts = hosts)
             }
         }

@@ -47,8 +47,9 @@ class KeyManager(private val context: Context) {
         val pubKey = getPublicKeyString()
             ?: return Result.failure(IllegalStateException("No key generated"))
 
+        val escaped = pubKey.replace("'", "'\\''")
         val command = "mkdir -p ~/.ssh && chmod 700 ~/.ssh && " +
-            "echo '${pubKey}' >> ~/.ssh/authorized_keys && " +
+            "printf '%s\\n' '${escaped}' >> ~/.ssh/authorized_keys && " +
             "chmod 600 ~/.ssh/authorized_keys"
 
         return ssh.exec(command).map { }

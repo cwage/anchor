@@ -59,6 +59,48 @@ class SshManager {
         try {
             val jsch = JSch()
             keyManager?.addIdentity(jsch)
+            val store = hostKeyStore
+            val savedFingerprint = store?.getFingerprint(host, port)
+            val isKnownHost = savedFingerprint != null
+
+            // Probe for host key without sending credentials
+            var expectedFingerprint = savedFingerprint
+            if (!hostKeyAlreadyAccepted) {
+                val probe = jsch.getSession(username, host, port)
+                val probeConfig = Properties()
+                probeConfig["StrictHostKeyChecking"] = "no"
+                probeConfig["PreferredAuthentications"] = "none"
+                probe.setConfig(probeConfig)
+                probe.timeout = 10_000
+                try {
+                    probe.connect()
+                } catch (_: Exception) {
+                    // "none" auth always fails, but we got the host key
+                }
+                val probeKey = probe.hostKey
+                probe.disconnect()
+
+                if (probeKey == null) {
+                    return@withContext ConnectResult.Failed("Unable to retrieve host key")
+                }
+
+                val fingerprint = probeKey.getFingerPrint(jsch)
+                val keyType = probeKey.type
+
+                when {
+                    !isKnownHost && store != null -> {
+                        pendingHostKeyInfo = HostKeyInfo(host, port, keyType, fingerprint, false)
+                        return@withContext ConnectResult.NeedsHostKeyConfirmation(pendingHostKeyInfo!!)
+                    }
+                    isKnownHost && fingerprint != savedFingerprint -> {
+                        pendingHostKeyInfo = HostKeyInfo(host, port, keyType, fingerprint, true, savedFingerprint)
+                        return@withContext ConnectResult.NeedsHostKeyConfirmation(pendingHostKeyInfo!!)
+                    }
+                }
+                expectedFingerprint = fingerprint
+            }
+
+            // Authenticated connection — host key was already verified by probe
             val s = jsch.getSession(username, host, port)
             if (password != null) {
                 s.setPassword(password)
@@ -74,32 +116,13 @@ class SshManager {
             s.timeout = 10_000
             s.connect()
 
-            // Check host key after successful connect
+            // Re-verify fingerprint matches what the probe saw
             val hostKey = s.hostKey
             val fingerprint = hostKey.getFingerPrint(jsch)
-            val keyType = hostKey.type
-            val store = hostKeyStore
-
-            if (!hostKeyAlreadyAccepted && store != null) {
-                val savedFingerprint = store.getFingerprint(host, port)
-                when {
-                    savedFingerprint == null -> {
-                        // Unknown host — disconnect and ask user
-                        s.disconnect()
-                        pendingHostKeyInfo = HostKeyInfo(host, port, keyType, fingerprint, false)
-                        return@withContext ConnectResult.NeedsHostKeyConfirmation(pendingHostKeyInfo!!)
-                    }
-                    savedFingerprint != fingerprint -> {
-                        // Changed key — disconnect and warn user
-                        s.disconnect()
-                        pendingHostKeyInfo = HostKeyInfo(host, port, keyType, fingerprint, true, savedFingerprint)
-                        return@withContext ConnectResult.NeedsHostKeyConfirmation(pendingHostKeyInfo!!)
-                    }
-                    // else: matches, proceed
-                }
+            if (expectedFingerprint != null && fingerprint != expectedFingerprint) {
+                s.disconnect()
+                return@withContext ConnectResult.Failed("Host key changed between verification and connect")
             }
-
-            // Save/update fingerprint
             store?.saveFingerprint(host, port, fingerprint)
             session = s
             pendingHostKeyInfo = null
@@ -157,18 +180,21 @@ class SshManager {
         }
     }
 
+    private fun shellEscape(s: String): String = "'" + s.replace("'", "'\\''") + "'"
+
     suspend fun capturePane(sessionName: String): Result<String> {
-        return exec("tmux capture-pane -t '$sessionName' -p -S -50").map { output ->
+        return exec("tmux capture-pane -t ${shellEscape(sessionName)} -p -S -50").map { output ->
             output.trimEnd()
         }
     }
 
     suspend fun resizePane(sessionName: String, cols: Int, rows: Int): Result<String> {
-        return exec("tmux resize-window -t '$sessionName' -x $cols -y $rows")
+        val safeCols = cols.coerceIn(1, 500)
+        val safeRows = rows.coerceIn(1, 500)
+        return exec("tmux resize-window -t ${shellEscape(sessionName)} -x $safeCols -y $safeRows")
     }
 
     suspend fun sendKeys(sessionName: String, keys: String): Result<String> {
-        val escaped = keys.replace("'", "'\\''")
-        return exec("tmux send-keys -t '$sessionName' -l '$escaped' && tmux send-keys -t '$sessionName' Enter")
+        return exec("tmux send-keys -t ${shellEscape(sessionName)} -l ${shellEscape(keys)} && tmux send-keys -t ${shellEscape(sessionName)} Enter")
     }
 }

@@ -28,6 +28,15 @@ data class HostKeyInfo(
 )
 
 class SshManager {
+    companion object {
+        init {
+            // Disable slow algorithm availability checks that take ~7s on Android
+            JSch.setConfig("CheckKexes", "")
+            JSch.setConfig("CheckSignatures", "")
+            JSch.setConfig("CheckCiphers", "")
+        }
+    }
+
     private var session: Session? = null
     var keyManager: KeyManager? = null
     var hostKeyStore: HostKeyStore? = null
@@ -100,7 +109,7 @@ class SshManager {
                 expectedFingerprint = fingerprint
             }
 
-            // Authenticated connection — host key was already verified by probe
+            // Authenticated connection — host key was verified by probe
             val s = jsch.getSession(username, host, port)
             if (password != null) {
                 s.setPassword(password)

@@ -55,7 +55,7 @@ fun AddHostScreen(
                 value = hostname,
                 onValueChange = { hostname = it },
                 label = { Text("Hostname / IP") },
-                placeholder = { Text("10.10.15.3") },
+                placeholder = { Text("example.com") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrect = false),
                 modifier = Modifier.fillMaxWidth()

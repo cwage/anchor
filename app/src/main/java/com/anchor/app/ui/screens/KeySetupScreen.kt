@@ -9,13 +9,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.anchor.app.data.Host
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -23,17 +23,17 @@ fun KeySetupScreen(
     hasKey: Boolean,
     publicKey: String?,
     onGenerateKey: () -> Unit,
-    onDeployKey: (host: String, port: Int, username: String, password: String) -> Unit,
+    onDeployKey: (host: Host, password: String) -> Unit,
     isGenerating: Boolean,
     isDeploying: Boolean,
     error: String?,
     deploySuccess: Boolean,
+    hosts: List<Host>,
     onBack: () -> Unit
 ) {
-    var host by remember { mutableStateOf("") }
-    var port by remember { mutableStateOf("22") }
-    var username by remember { mutableStateOf("") }
+    var selectedHost by remember { mutableStateOf<Host?>(null) }
     var password by remember { mutableStateOf("") }
+    var expanded by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -91,7 +91,7 @@ fun KeySetupScreen(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                     }
-                    Text("Generate ed25519 Key")
+                    Text("Generate ECDSA Key")
                 }
             }
 
@@ -106,35 +106,59 @@ fun KeySetupScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            } else if (hosts.isEmpty()) {
+                Text(
+                    "Add a host first from the home screen",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             } else {
                 Text(
-                    "Enter server credentials to deploy your public key. This uses your password once to copy the key, then future connections use the key.",
+                    "Select a host and enter your password to deploy the key. Future connections will use the key.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
-                OutlinedTextField(
-                    value = host,
-                    onValueChange = { host = it },
-                    label = { Text("Host") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = port,
-                    onValueChange = { port = it },
-                    label = { Text("Port") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = username,
-                    onValueChange = { username = it },
-                    label = { Text("Username") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                ExposedDropdownMenuBox(
+                    expanded = expanded,
+                    onExpandedChange = { expanded = it }
+                ) {
+                    OutlinedTextField(
+                        value = selectedHost?.let { "${it.label} (${it.username}@${it.hostname})" } ?: "",
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Host") },
+                        placeholder = { Text("Select a host") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor()
+                    )
+                    ExposedDropdownMenu(
+                        expanded = expanded,
+                        onDismissRequest = { expanded = false }
+                    ) {
+                        hosts.forEach { host ->
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(host.label, style = MaterialTheme.typography.bodyLarge)
+                                        Text(
+                                            "${host.username}@${host.hostname}:${host.port}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                },
+                                onClick = {
+                                    selectedHost = host
+                                    expanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+
                 OutlinedTextField(
                     value = password,
                     onValueChange = { password = it },
@@ -166,10 +190,9 @@ fun KeySetupScreen(
 
                 Button(
                     onClick = {
-                        val p = port.toIntOrNull() ?: 22
-                        onDeployKey(host.trim(), p, username.trim(), password)
+                        selectedHost?.let { onDeployKey(it, password) }
                     },
-                    enabled = !isDeploying && host.isNotBlank() && username.isNotBlank() && password.isNotBlank(),
+                    enabled = !isDeploying && selectedHost != null && password.isNotBlank(),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     if (isDeploying) {

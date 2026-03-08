@@ -6,13 +6,22 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.anchor.app.ui.screens.ConnectScreen
+import com.anchor.app.ui.screens.AddHostScreen
 import com.anchor.app.ui.screens.HostKeyDialog
+import com.anchor.app.ui.screens.HostListScreen
 import com.anchor.app.ui.screens.KeySetupScreen
 import com.anchor.app.ui.screens.SessionListScreen
 import com.anchor.app.ui.screens.SessionViewScreen
@@ -43,7 +52,7 @@ fun AnchorApp(viewModel: AnchorViewModel = viewModel()) {
 
     // Show host key dialog if any state has a prompt
     val hostKeyPrompt = when (val state = uiState) {
-        is UiState.Connect -> state.hostKeyPrompt
+        is UiState.HostList -> state.hostKeyPrompt
         is UiState.KeySetup -> state.hostKeyPrompt
         else -> null
     }
@@ -55,14 +64,32 @@ fun AnchorApp(viewModel: AnchorViewModel = viewModel()) {
         )
     }
 
+    // Show password prompt dialog
+    if (uiState is UiState.HostList && (uiState as UiState.HostList).passwordPrompt) {
+        PasswordPromptDialog(
+            onSubmit = viewModel::submitPassword,
+            onDismiss = viewModel::dismissPasswordPrompt
+        )
+    }
+
     when (val state = uiState) {
-        is UiState.Connect -> {
-            ConnectScreen(
-                onConnect = viewModel::connect,
-                isConnecting = state.isConnecting,
-                error = state.error,
+        is UiState.HostList -> {
+            HostListScreen(
+                hosts = state.hosts,
+                onHostTap = viewModel::connectToHost,
+                onAddHost = viewModel::openAddHost,
+                onDeleteHost = viewModel::deleteHost,
+                onKeySetup = viewModel::openKeySetup,
                 hasKey = state.hasKey,
-                onKeySetup = viewModel::openKeySetup
+                isConnecting = state.isConnecting,
+                connectingHostId = state.connectingHostId,
+                error = state.error
+            )
+        }
+        is UiState.AddHost -> {
+            AddHostScreen(
+                onSave = viewModel::saveHost,
+                onBack = viewModel::goHome
             )
         }
         is UiState.KeySetup -> {
@@ -75,7 +102,8 @@ fun AnchorApp(viewModel: AnchorViewModel = viewModel()) {
                 isDeploying = state.isDeploying,
                 error = state.error,
                 deploySuccess = state.deploySuccess,
-                onBack = viewModel::closeKeySetup
+                hosts = state.hosts,
+                onBack = viewModel::goHome
             )
         }
         is UiState.SessionList -> {
@@ -94,8 +122,44 @@ fun AnchorApp(viewModel: AnchorViewModel = viewModel()) {
                 sessionName = state.sessionName,
                 paneContent = state.paneContent,
                 onSendKeys = viewModel::sendKeys,
+                onResizePane = viewModel::resizePane,
                 onBack = viewModel::closeSession
             )
         }
     }
+}
+
+@Composable
+fun PasswordPromptDialog(
+    onSubmit: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var password by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Password Required") },
+        text = {
+            OutlinedTextField(
+                value = password,
+                onValueChange = { password = it },
+                label = { Text("Password") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Password,
+                    autoCorrect = false
+                )
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSubmit(password) },
+                enabled = password.isNotBlank()
+            ) { Text("Connect") }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
 }

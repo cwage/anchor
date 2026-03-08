@@ -4,6 +4,8 @@ import android.app.Application
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.anchor.app.data.AppDatabase
+import com.anchor.app.data.Host
 import com.anchor.app.ssh.HostKeyInfo
 import com.anchor.app.ssh.HostKeyStore
 import com.anchor.app.ssh.KeyManager
@@ -13,6 +15,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 data class HostKeyPrompt(
@@ -25,12 +28,17 @@ data class HostKeyPrompt(
 )
 
 sealed class UiState {
-    data class Connect(
-        val isConnecting: Boolean = false,
-        val error: String? = null,
+    data class HostList(
+        val hosts: List<Host> = emptyList(),
         val hasKey: Boolean = false,
-        val hostKeyPrompt: HostKeyPrompt? = null
+        val isConnecting: Boolean = false,
+        val connectingHostId: Long? = null,
+        val error: String? = null,
+        val hostKeyPrompt: HostKeyPrompt? = null,
+        val passwordPrompt: Boolean = false
     ) : UiState()
+
+    data class AddHost(val dummy: Unit = Unit) : UiState()
 
     data class KeySetup(
         val hasKey: Boolean = false,
@@ -39,7 +47,8 @@ sealed class UiState {
         val isDeploying: Boolean = false,
         val error: String? = null,
         val deploySuccess: Boolean = false,
-        val hostKeyPrompt: HostKeyPrompt? = null
+        val hostKeyPrompt: HostKeyPrompt? = null,
+        val hosts: List<Host> = emptyList()
     ) : UiState()
 
     data class SessionList(
@@ -62,60 +71,94 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
         it.keyManager = keyManager
         it.hostKeyStore = hostKeyStore
     }
-    private val _uiState = MutableStateFlow<UiState>(
-        UiState.Connect(hasKey = keyManager.hasKey())
-    )
+    private val db = AppDatabase.getInstance(application)
+    private val hostDao = db.hostDao()
+
+    private val _uiState = MutableStateFlow<UiState>(UiState.HostList(hasKey = keyManager.hasKey()))
     val uiState: StateFlow<UiState> = _uiState
 
     private var pollJob: Job? = null
     private var hostLabel: String = ""
 
-    private var pendingHost: String = ""
-    private var pendingPort: Int = 22
-    private var pendingUsername: String = ""
+    private var pendingHost: Host? = null
     private var pendingPassword: String? = null
     private var pendingAction: String = ""
 
-    fun connect(host: String, port: Int, username: String, password: String) {
+    init {
+        viewModelScope.launch {
+            hostDao.getAll().collect { hosts ->
+                val current = _uiState.value
+                if (current is UiState.HostList) {
+                    _uiState.value = current.copy(hosts = hosts, hasKey = keyManager.hasKey())
+                }
+            }
+        }
+    }
+
+    fun connectToHost(host: Host, password: String? = null) {
         pendingHost = host
-        pendingPort = port
-        pendingUsername = username
-        pendingPassword = password.ifBlank { null }
+        pendingPassword = password
         pendingAction = "connect"
 
         viewModelScope.launch {
-            _uiState.value = UiState.Connect(isConnecting = true, hasKey = keyManager.hasKey())
+            _uiState.value = (_uiState.value as? UiState.HostList)?.copy(
+                isConnecting = true,
+                connectingHostId = host.id,
+                error = null,
+                passwordPrompt = false
+            ) ?: return@launch
+
             doConnect(false)
         }
     }
 
     private suspend fun doConnect(hostKeyAccepted: Boolean) {
-        when (val result = ssh.connect(pendingHost, pendingPort, pendingUsername, pendingPassword, hostKeyAccepted)) {
+        val host = pendingHost ?: return
+        when (val result = ssh.connect(host.hostname, host.port, host.username, pendingPassword, hostKeyAccepted)) {
             is SshManager.ConnectResult.Success -> {
-                hostLabel = "$pendingUsername@$pendingHost"
-                _uiState.value = UiState.SessionList(isLoading = true, hostLabel = hostLabel)
+                hostDao.updateLastConnected(host.id, System.currentTimeMillis())
+                hostLabel = "${host.username}@${host.hostname}"
+                _uiState.value = UiState.SessionList(isLoading = true, hostLabel = host.label)
                 refreshSessions()
             }
             is SshManager.ConnectResult.NeedsHostKeyConfirmation -> {
                 val info = result.info
                 val prompt = HostKeyPrompt(info.host, info.port, info.keyType, info.fingerprint, info.isChanged, info.oldFingerprint)
-                when (pendingAction) {
-                    "connect" -> _uiState.value = UiState.Connect(hasKey = keyManager.hasKey(), hostKeyPrompt = prompt)
-                    "deploy" -> _uiState.value = UiState.KeySetup(hasKey = keyManager.hasKey(), publicKey = keyManager.getPublicKeyString(), hostKeyPrompt = prompt)
-                }
+                val hosts = hostDao.getAll().first()
+                _uiState.value = UiState.HostList(
+                    hosts = hosts,
+                    hasKey = keyManager.hasKey(),
+                    hostKeyPrompt = prompt
+                )
             }
             is SshManager.ConnectResult.Failed -> {
-                when (pendingAction) {
-                    "connect" -> _uiState.value = UiState.Connect(error = result.error, hasKey = keyManager.hasKey())
-                    "deploy" -> _uiState.value = UiState.KeySetup(hasKey = keyManager.hasKey(), publicKey = keyManager.getPublicKeyString(), error = result.error)
-                }
+                val hosts = hostDao.getAll().first()
+                val needsPassword = result.error.contains("Auth fail", ignoreCase = true) && pendingPassword == null
+                _uiState.value = UiState.HostList(
+                    hosts = hosts,
+                    hasKey = keyManager.hasKey(),
+                    error = if (needsPassword) null else result.error,
+                    passwordPrompt = needsPassword
+                )
             }
+        }
+    }
+
+    fun submitPassword(password: String) {
+        val host = pendingHost ?: return
+        connectToHost(host, password)
+    }
+
+    fun dismissPasswordPrompt() {
+        viewModelScope.launch {
+            val hosts = hostDao.getAll().first()
+            _uiState.value = UiState.HostList(hosts = hosts, hasKey = keyManager.hasKey())
         }
     }
 
     fun acceptHostKey() {
         val prompt = when (val state = _uiState.value) {
-            is UiState.Connect -> state.hostKeyPrompt
+            is UiState.HostList -> state.hostKeyPrompt
             is UiState.KeySetup -> state.hostKeyPrompt
             else -> null
         } ?: return
@@ -125,11 +168,18 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             when (pendingAction) {
                 "connect" -> {
-                    _uiState.value = UiState.Connect(isConnecting = true, hasKey = keyManager.hasKey())
+                    val hosts = hostDao.getAll().first()
+                    _uiState.value = UiState.HostList(
+                        hosts = hosts,
+                        hasKey = keyManager.hasKey(),
+                        isConnecting = true,
+                        connectingHostId = pendingHost?.id
+                    )
                     doConnect(true)
                 }
                 "deploy" -> {
-                    _uiState.value = UiState.KeySetup(hasKey = keyManager.hasKey(), publicKey = keyManager.getPublicKeyString(), isDeploying = true)
+                    val hosts = hostDao.getAll().first()
+                    _uiState.value = UiState.KeySetup(hasKey = keyManager.hasKey(), publicKey = keyManager.getPublicKeyString(), isDeploying = true, hosts = hosts)
                     doDeploy(true)
                 }
             }
@@ -137,19 +187,55 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun rejectHostKey() {
-        val error = "Connection rejected: host key not trusted"
-        when (pendingAction) {
-            "connect" -> _uiState.value = UiState.Connect(error = error, hasKey = keyManager.hasKey())
-            "deploy" -> _uiState.value = UiState.KeySetup(hasKey = keyManager.hasKey(), publicKey = keyManager.getPublicKeyString(), error = error)
+        viewModelScope.launch {
+            val error = "Connection rejected: host key not trusted"
+            when (pendingAction) {
+                "connect" -> {
+                    val hosts = hostDao.getAll().first()
+                    _uiState.value = UiState.HostList(hosts = hosts, hasKey = keyManager.hasKey(), error = error)
+                }
+                "deploy" -> {
+                    val hosts = hostDao.getAll().first()
+                    _uiState.value = UiState.KeySetup(hasKey = keyManager.hasKey(), publicKey = keyManager.getPublicKeyString(), error = error, hosts = hosts)
+                }
+            }
         }
     }
 
-    fun openKeySetup() {
-        _uiState.value = UiState.KeySetup(hasKey = keyManager.hasKey(), publicKey = keyManager.getPublicKeyString())
+    // Host management
+    fun openAddHost() {
+        _uiState.value = UiState.AddHost()
     }
 
-    fun closeKeySetup() {
-        _uiState.value = UiState.Connect(hasKey = keyManager.hasKey())
+    fun saveHost(label: String, hostname: String, port: Int, username: String) {
+        viewModelScope.launch {
+            hostDao.insert(Host(label = label, hostname = hostname, port = port, username = username))
+            val hosts = hostDao.getAll().first()
+            _uiState.value = UiState.HostList(hosts = hosts, hasKey = keyManager.hasKey())
+        }
+    }
+
+    fun deleteHost(host: Host) {
+        viewModelScope.launch {
+            hostDao.delete(host)
+        }
+    }
+
+    fun goHome() {
+        stopPolling()
+        ssh.disconnect()
+        viewModelScope.launch {
+            val hosts = hostDao.getAll().first()
+            _uiState.value = UiState.HostList(hosts = hosts, hasKey = keyManager.hasKey())
+        }
+    }
+
+    // Key setup
+    fun openKeySetup() {
+        viewModelScope.launch {
+            val hosts = hostDao.getAll().first()
+            _uiState.value = UiState.KeySetup(hasKey = keyManager.hasKey(), publicKey = keyManager.getPublicKeyString(), hosts = hosts)
+        }
     }
 
     fun generateKey() {
@@ -158,29 +244,29 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
             if (current is UiState.KeySetup) {
                 _uiState.value = current.copy(isGenerating = true, error = null)
             }
+            val hosts = hostDao.getAll().first()
             val result = keyManager.generateKey()
             result.fold(
                 onSuccess = { pubKey ->
-                    _uiState.value = UiState.KeySetup(hasKey = true, publicKey = pubKey)
+                    _uiState.value = UiState.KeySetup(hasKey = true, publicKey = pubKey, hosts = hosts)
                 },
                 onFailure = { e ->
                     Log.e("Anchor", "Key generation failed", e)
                     _uiState.value = UiState.KeySetup(
                         hasKey = keyManager.hasKey(),
                         publicKey = keyManager.getPublicKeyString(),
-                        error = e.message ?: "Key generation failed"
+                        error = e.message ?: "Key generation failed",
+                        hosts = hosts
                     )
                 }
             )
         }
     }
 
-    fun deployKey(host: String, port: Int, username: String, password: String) {
-        pendingHost = host
-        pendingPort = port
-        pendingUsername = username
+    fun deployKey(host: Host, password: String) {
         pendingPassword = password
         pendingAction = "deploy"
+        pendingHost = host
 
         viewModelScope.launch {
             val current = _uiState.value
@@ -192,18 +278,18 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private suspend fun doDeploy(hostKeyAccepted: Boolean) {
-        // Connect first to verify host key
-        when (val result = ssh.connect(pendingHost, pendingPort, pendingUsername, pendingPassword, hostKeyAccepted)) {
+        val host = pendingHost ?: return
+        val hosts = hostDao.getAll().first()
+        when (val result = ssh.connect(host.hostname, host.port, host.username, pendingPassword, hostKeyAccepted)) {
             is SshManager.ConnectResult.Success -> {
-                // Connected, now deploy the key via the open session
                 val deployResult = keyManager.deployKeyViaSession(ssh)
                 ssh.disconnect()
                 deployResult.fold(
                     onSuccess = {
-                        _uiState.value = UiState.KeySetup(hasKey = true, publicKey = keyManager.getPublicKeyString(), deploySuccess = true)
+                        _uiState.value = UiState.KeySetup(hasKey = true, publicKey = keyManager.getPublicKeyString(), deploySuccess = true, hosts = hosts)
                     },
                     onFailure = { e ->
-                        _uiState.value = UiState.KeySetup(hasKey = true, publicKey = keyManager.getPublicKeyString(), error = e.message ?: "Deploy failed")
+                        _uiState.value = UiState.KeySetup(hasKey = true, publicKey = keyManager.getPublicKeyString(), error = e.message ?: "Deploy failed", hosts = hosts)
                     }
                 )
             }
@@ -212,15 +298,17 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
                 _uiState.value = UiState.KeySetup(
                     hasKey = keyManager.hasKey(),
                     publicKey = keyManager.getPublicKeyString(),
-                    hostKeyPrompt = HostKeyPrompt(info.host, info.port, info.keyType, info.fingerprint, info.isChanged, info.oldFingerprint)
+                    hostKeyPrompt = HostKeyPrompt(info.host, info.port, info.keyType, info.fingerprint, info.isChanged, info.oldFingerprint),
+                    hosts = hosts
                 )
             }
             is SshManager.ConnectResult.Failed -> {
-                _uiState.value = UiState.KeySetup(hasKey = keyManager.hasKey(), publicKey = keyManager.getPublicKeyString(), error = result.error)
+                _uiState.value = UiState.KeySetup(hasKey = keyManager.hasKey(), publicKey = keyManager.getPublicKeyString(), error = result.error, hosts = hosts)
             }
         }
     }
 
+    // Session management
     fun refreshSessions() {
         viewModelScope.launch {
             val current = _uiState.value
@@ -230,10 +318,12 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
             val result = ssh.listTmuxSessions()
             result.fold(
                 onSuccess = { sessions ->
-                    _uiState.value = UiState.SessionList(sessions = sessions, hostLabel = hostLabel)
+                    val label = (current as? UiState.SessionList)?.hostLabel ?: hostLabel
+                    _uiState.value = UiState.SessionList(sessions = sessions, hostLabel = label)
                 },
                 onFailure = { e ->
-                    _uiState.value = UiState.SessionList(error = e.message ?: "Failed to list sessions", hostLabel = hostLabel)
+                    val label = (current as? UiState.SessionList)?.hostLabel ?: hostLabel
+                    _uiState.value = UiState.SessionList(error = e.message ?: "Failed to list sessions", hostLabel = label)
                 }
             )
         }
@@ -250,6 +340,15 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
         refreshSessions()
     }
 
+    fun resizePane(cols: Int, rows: Int) {
+        val state = _uiState.value
+        if (state is UiState.SessionView) {
+            viewModelScope.launch {
+                ssh.resizePane(state.sessionName, cols, rows)
+            }
+        }
+    }
+
     fun sendKeys(keys: String) {
         val state = _uiState.value
         if (state is UiState.SessionView) {
@@ -264,7 +363,10 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
     fun disconnect() {
         stopPolling()
         ssh.disconnect()
-        _uiState.value = UiState.Connect(hasKey = keyManager.hasKey())
+        viewModelScope.launch {
+            val hosts = hostDao.getAll().first()
+            _uiState.value = UiState.HostList(hosts = hosts, hasKey = keyManager.hasKey())
+        }
     }
 
     private fun startPolling(sessionName: String) {

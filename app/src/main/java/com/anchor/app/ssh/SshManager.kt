@@ -163,8 +163,12 @@ class SshManager {
         }
     }
 
+    suspend fun resizePane(sessionName: String, cols: Int, rows: Int): Result<String> {
+        return exec("tmux resize-window -t '$sessionName' -x $cols -y $rows")
+    }
+
     suspend fun sendKeys(sessionName: String, keys: String): Result<String> {
         val escaped = keys.replace("'", "'\\''")
-        return exec("tmux send-keys -t '$sessionName' '$escaped' Enter")
+        return exec("tmux send-keys -t '$sessionName' -l '$escaped' && tmux send-keys -t '$sessionName' Enter")
     }
 }

@@ -7,13 +7,26 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+
+private const val PREFS_NAME = "anchor_prefs"
+private const val KEY_FONT_SIZE = "session_font_size"
+private const val DEFAULT_FONT_SIZE = 14
+private const val MIN_FONT_SIZE = 8
+private const val MAX_FONT_SIZE = 28
+private const val CONTENT_PADDING_DP = 12
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -21,10 +34,16 @@ fun SessionViewScreen(
     sessionName: String,
     paneContent: String,
     onSendKeys: (String) -> Unit,
+    onResizePane: (cols: Int, rows: Int) -> Unit,
     onBack: () -> Unit
 ) {
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences(PREFS_NAME, 0) }
+    var fontSize by remember { mutableIntStateOf(prefs.getInt(KEY_FONT_SIZE, DEFAULT_FONT_SIZE)) }
     var input by remember { mutableStateOf("") }
     val scrollState = rememberScrollState()
+    val density = LocalDensity.current
+    val textMeasurer = rememberTextMeasurer()
 
     LaunchedEffect(paneContent) {
         scrollState.animateScrollTo(scrollState.maxValue)
@@ -37,6 +56,35 @@ fun SessionViewScreen(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    IconButton(
+                        onClick = {
+                            if (fontSize > MIN_FONT_SIZE) {
+                                fontSize -= 2
+                                prefs.edit().putInt(KEY_FONT_SIZE, fontSize).apply()
+                            }
+                        },
+                        enabled = fontSize > MIN_FONT_SIZE
+                    ) {
+                        Icon(Icons.Default.Remove, contentDescription = "Decrease font size")
+                    }
+                    Text(
+                        text = "${fontSize}",
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.align(Alignment.CenterVertically)
+                    )
+                    IconButton(
+                        onClick = {
+                            if (fontSize < MAX_FONT_SIZE) {
+                                fontSize += 2
+                                prefs.edit().putInt(KEY_FONT_SIZE, fontSize).apply()
+                            }
+                        },
+                        enabled = fontSize < MAX_FONT_SIZE
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = "Increase font size")
                     }
                 }
             )
@@ -71,23 +119,40 @@ fun SessionViewScreen(
             }
         }
     ) { padding ->
-        Column(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-                .verticalScroll(scrollState),
-            verticalArrangement = Arrangement.Bottom
         ) {
-            Text(
-                text = paneContent.ifBlank { "(empty)" },
-                fontFamily = FontFamily.Monospace,
-                fontSize = 12.sp,
-                lineHeight = 16.sp,
+            val availableWidthPx = with(density) { (maxWidth - (CONTENT_PADDING_DP * 2).dp).toPx() }
+            val availableHeightPx = with(density) { (maxHeight - (CONTENT_PADDING_DP * 2).dp).toPx() }
+            val style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = fontSize.sp, lineHeight = (fontSize + 4).sp)
+            val charWidth = textMeasurer.measure("M", style).size.width
+            val lineHeight = textMeasurer.measure("M", style).size.height
+            val cols = if (charWidth > 0) (availableWidthPx / charWidth).toInt().coerceAtLeast(20) else 80
+            val rows = if (lineHeight > 0) (availableHeightPx / lineHeight).toInt().coerceAtLeast(10) else 24
+
+            LaunchedEffect(cols, rows) {
+                onResizePane(cols, rows)
+            }
+
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(12.dp)
-            )
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+                    .verticalScroll(scrollState),
+                verticalArrangement = Arrangement.Bottom
+            ) {
+                Text(
+                    text = paneContent.ifBlank { "(empty)" },
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = fontSize.sp,
+                    lineHeight = (fontSize + 4).sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(CONTENT_PADDING_DP.dp)
+                )
+            }
         }
     }
 }

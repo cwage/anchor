@@ -363,6 +363,28 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun nextWindow() {
+        val state = _uiState.value
+        if (state is UiState.SessionView) {
+            viewModelScope.launch {
+                ssh.nextWindow(state.sessionName)
+                delay(200)
+                capturePane(state.sessionName)
+            }
+        }
+    }
+
+    fun previousWindow() {
+        val state = _uiState.value
+        if (state is UiState.SessionView) {
+            viewModelScope.launch {
+                ssh.previousWindow(state.sessionName)
+                delay(200)
+                capturePane(state.sessionName)
+            }
+        }
+    }
+
     fun sendKeys(keys: String) {
         val state = _uiState.value
         if (state is UiState.SessionView) {

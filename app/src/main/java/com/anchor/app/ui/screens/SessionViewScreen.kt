@@ -1,6 +1,7 @@
 package com.anchor.app.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -18,8 +19,10 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.abs
 
 private const val PREFS_NAME = "anchor_prefs"
 private const val KEY_FONT_SIZE = "session_font_size"
@@ -35,6 +38,8 @@ fun SessionViewScreen(
     paneContent: String,
     onSendKeys: (String) -> Unit,
     onResizePane: (cols: Int, rows: Int) -> Unit,
+    onNextWindow: () -> Unit,
+    onPreviousWindow: () -> Unit,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -136,10 +141,26 @@ fun SessionViewScreen(
                 onResizePane(cols, rows)
             }
 
+            var swipeDelta by remember { mutableFloatStateOf(0f) }
+            val swipeThreshold = with(density) { 80.dp.toPx() }
+
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+                    .pointerInput(Unit) {
+                        detectHorizontalDragGestures(
+                            onDragStart = { swipeDelta = 0f },
+                            onDragEnd = {
+                                if (abs(swipeDelta) > swipeThreshold) {
+                                    if (swipeDelta < 0) onNextWindow() else onPreviousWindow()
+                                }
+                                swipeDelta = 0f
+                            },
+                            onDragCancel = { swipeDelta = 0f },
+                            onHorizontalDrag = { _, dragAmount -> swipeDelta += dragAmount }
+                        )
+                    }
                     .verticalScroll(scrollState),
                 verticalArrangement = Arrangement.Bottom
             ) {

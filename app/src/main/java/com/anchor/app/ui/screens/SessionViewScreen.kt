@@ -141,14 +141,14 @@ fun SessionViewScreen(
                 onResizePane(cols, rows)
             }
 
-            var swipeDelta by remember { mutableFloatStateOf(0f) }
             val swipeThreshold = with(density) { 80.dp.toPx() }
 
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-                    .pointerInput(Unit) {
+                    .pointerInput(swipeThreshold) {
+                        var swipeDelta = 0f
                         detectHorizontalDragGestures(
                             onDragStart = { swipeDelta = 0f },
                             onDragEnd = {

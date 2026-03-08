@@ -1,0 +1,12 @@
+services:
+  build:
+    build: .
+    volumes:
+      - .:/project
+      - gradle-cache:/gradle-cache
+    working_dir: /project
+    # Keep container available for repeated builds
+    command: ["sleep", "infinity"]
+
+volumes:
+  gradle-cache:

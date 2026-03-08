@@ -85,4 +85,4 @@ tmux resize-window -A -t <session>
 
 ## License
 
-TBD
+MIT — see [LICENSE](LICENSE).

@@ -63,8 +63,9 @@ class SshManager {
             val savedFingerprint = store?.getFingerprint(host, port)
             val isKnownHost = savedFingerprint != null
 
-            // Phase 1: For unknown hosts, probe for the host key without credentials
-            if (!hostKeyAlreadyAccepted && !isKnownHost && store != null) {
+            // Probe for host key without sending credentials
+            var expectedFingerprint = savedFingerprint
+            if (!hostKeyAlreadyAccepted) {
                 val probe = jsch.getSession(username, host, port)
                 val probeConfig = Properties()
                 probeConfig["StrictHostKeyChecking"] = "no"
@@ -76,45 +77,30 @@ class SshManager {
                 } catch (_: Exception) {
                     // "none" auth always fails, but we got the host key
                 }
-                val hostKey = probe.hostKey
-                if (hostKey != null) {
-                    val fingerprint = hostKey.getFingerPrint(jsch)
-                    val keyType = hostKey.type
-                    probe.disconnect()
-                    pendingHostKeyInfo = HostKeyInfo(host, port, keyType, fingerprint, false)
-                    return@withContext ConnectResult.NeedsHostKeyConfirmation(pendingHostKeyInfo!!)
-                }
+                val probeKey = probe.hostKey
                 probe.disconnect()
-            }
 
-            // Phase 2: For known hosts with changed key, probe and compare
-            if (!hostKeyAlreadyAccepted && isKnownHost) {
-                val probe = jsch.getSession(username, host, port)
-                val probeConfig = Properties()
-                probeConfig["StrictHostKeyChecking"] = "no"
-                probeConfig["PreferredAuthentications"] = "none"
-                probe.setConfig(probeConfig)
-                probe.timeout = 10_000
-                try {
-                    probe.connect()
-                } catch (_: Exception) {
-                    // Expected — "none" auth fails
+                if (probeKey == null) {
+                    return@withContext ConnectResult.Failed("Unable to retrieve host key")
                 }
-                val hostKey = probe.hostKey
-                if (hostKey != null) {
-                    val fingerprint = hostKey.getFingerPrint(jsch)
-                    val keyType = hostKey.type
-                    probe.disconnect()
-                    if (fingerprint != savedFingerprint) {
+
+                val fingerprint = probeKey.getFingerPrint(jsch)
+                val keyType = probeKey.type
+
+                when {
+                    !isKnownHost && store != null -> {
+                        pendingHostKeyInfo = HostKeyInfo(host, port, keyType, fingerprint, false)
+                        return@withContext ConnectResult.NeedsHostKeyConfirmation(pendingHostKeyInfo!!)
+                    }
+                    isKnownHost && fingerprint != savedFingerprint -> {
                         pendingHostKeyInfo = HostKeyInfo(host, port, keyType, fingerprint, true, savedFingerprint)
                         return@withContext ConnectResult.NeedsHostKeyConfirmation(pendingHostKeyInfo!!)
                     }
-                } else {
-                    probe.disconnect()
                 }
+                expectedFingerprint = fingerprint
             }
 
-            // Phase 3: Actual authenticated connection — host key is verified
+            // Authenticated connection — host key was already verified by probe
             val s = jsch.getSession(username, host, port)
             if (password != null) {
                 s.setPassword(password)
@@ -130,9 +116,13 @@ class SshManager {
             s.timeout = 10_000
             s.connect()
 
-            // Save/update fingerprint
+            // Re-verify fingerprint matches what the probe saw
             val hostKey = s.hostKey
             val fingerprint = hostKey.getFingerPrint(jsch)
+            if (expectedFingerprint != null && fingerprint != expectedFingerprint) {
+                s.disconnect()
+                return@withContext ConnectResult.Failed("Host key changed between verification and connect")
+            }
             store?.saveFingerprint(host, port, fingerprint)
             session = s
             pendingHostKeyInfo = null

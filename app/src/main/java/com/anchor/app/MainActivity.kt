@@ -14,6 +14,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
@@ -79,6 +80,7 @@ fun AnchorApp(viewModel: AnchorViewModel = viewModel()) {
                 onHostTap = viewModel::connectToHost,
                 onAddHost = viewModel::openAddHost,
                 onDeleteHost = viewModel::deleteHost,
+                onEditHost = viewModel::editHost,
                 onKeySetup = viewModel::openKeySetup,
                 hasKey = state.hasKey,
                 isConnecting = state.isConnecting,
@@ -87,12 +89,15 @@ fun AnchorApp(viewModel: AnchorViewModel = viewModel()) {
             )
         }
         is UiState.AddHost -> {
+            BackHandler { viewModel.goHome() }
             AddHostScreen(
                 onSave = viewModel::saveHost,
-                onBack = viewModel::goHome
+                onBack = viewModel::goHome,
+                editingHost = state.editingHost
             )
         }
         is UiState.KeySetup -> {
+            BackHandler { viewModel.goHome() }
             KeySetupScreen(
                 hasKey = state.hasKey,
                 publicKey = state.publicKey,
@@ -107,6 +112,7 @@ fun AnchorApp(viewModel: AnchorViewModel = viewModel()) {
             )
         }
         is UiState.SessionList -> {
+            BackHandler { viewModel.disconnect() }
             SessionListScreen(
                 sessions = state.sessions,
                 isLoading = state.isLoading,
@@ -118,6 +124,7 @@ fun AnchorApp(viewModel: AnchorViewModel = viewModel()) {
             )
         }
         is UiState.SessionView -> {
+            BackHandler { viewModel.closeSession() }
             SessionViewScreen(
                 sessionName = state.sessionName,
                 paneContent = state.paneContent,

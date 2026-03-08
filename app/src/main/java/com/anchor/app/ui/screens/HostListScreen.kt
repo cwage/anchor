@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -22,6 +23,7 @@ fun HostListScreen(
     onHostTap: (Host) -> Unit,
     onAddHost: () -> Unit,
     onDeleteHost: (Host) -> Unit,
+    onEditHost: (Host) -> Unit,
     onKeySetup: () -> Unit,
     hasKey: Boolean,
     isConnecting: Boolean = false,
@@ -128,6 +130,13 @@ fun HostListScreen(
                                     text = "${host.username}@${host.hostname}:${host.port}",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            IconButton(onClick = { onEditHost(host) }) {
+                                Icon(
+                                    Icons.Default.Edit,
+                                    contentDescription = "Edit",
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
                             if (isThisConnecting) {

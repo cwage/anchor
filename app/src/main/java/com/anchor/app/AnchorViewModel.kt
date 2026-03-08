@@ -38,7 +38,7 @@ sealed class UiState {
         val passwordPrompt: Boolean = false
     ) : UiState()
 
-    data class AddHost(val dummy: Unit = Unit) : UiState()
+    data class AddHost(val editingHost: Host? = null) : UiState()
 
     data class KeySetup(
         val hasKey: Boolean = false,
@@ -207,9 +207,18 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.value = UiState.AddHost()
     }
 
+    fun editHost(host: Host) {
+        _uiState.value = UiState.AddHost(editingHost = host)
+    }
+
     fun saveHost(label: String, hostname: String, port: Int, username: String) {
         viewModelScope.launch {
-            hostDao.insert(Host(label = label, hostname = hostname, port = port, username = username))
+            val current = _uiState.value
+            if (current is UiState.AddHost && current.editingHost != null) {
+                hostDao.update(current.editingHost.copy(label = label, hostname = hostname, port = port, username = username))
+            } else {
+                hostDao.insert(Host(label = label, hostname = hostname, port = port, username = username))
+            }
             val hosts = hostDao.getAll().first()
             _uiState.value = UiState.HostList(hosts = hosts, hasKey = keyManager.hasKey())
         }

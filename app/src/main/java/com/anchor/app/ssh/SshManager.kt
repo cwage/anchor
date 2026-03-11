@@ -1,11 +1,8 @@
 package com.anchor.app.ssh
 
 import com.jcraft.jsch.ChannelExec
-import com.jcraft.jsch.HostKey
-import com.jcraft.jsch.HostKeyRepository
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.Session
-import com.jcraft.jsch.UserInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -30,7 +27,6 @@ data class HostKeyInfo(
 class SshManager {
     companion object {
         init {
-            // Disable slow algorithm availability checks that take ~7s on Android
             JSch.setConfig("CheckKexes", "")
             JSch.setConfig("CheckSignatures", "")
             JSch.setConfig("CheckCiphers", "")
@@ -38,19 +34,9 @@ class SshManager {
     }
 
     private var session: Session? = null
-    var keyManager: KeyManager? = null
     var hostKeyStore: HostKeyStore? = null
 
-    // Set by the ViewModel before connect; checked during connection
-    var onHostKeyVerify: ((HostKeyInfo) -> Unit)? = null
     private var pendingHostKeyInfo: HostKeyInfo? = null
-    private var hostKeyAccepted: Boolean? = null
-
-    fun setPendingHostKeyDecision(accepted: Boolean) {
-        hostKeyAccepted = accepted
-    }
-
-    fun getPendingHostKeyInfo(): HostKeyInfo? = pendingHostKeyInfo
 
     sealed class ConnectResult {
         data object Success : ConnectResult()
@@ -63,16 +49,18 @@ class SshManager {
         port: Int,
         username: String,
         password: String? = null,
-        hostKeyAlreadyAccepted: Boolean = false
+        hostKeyAlreadyAccepted: Boolean = false,
+        privateKeyBytes: ByteArray? = null
     ): ConnectResult = withContext(Dispatchers.IO) {
         try {
             val jsch = JSch()
-            keyManager?.addIdentity(jsch)
+            if (privateKeyBytes != null) {
+                jsch.addIdentity("anchor", privateKeyBytes, null, null)
+            }
             val store = hostKeyStore
             val savedFingerprint = store?.getFingerprint(host, port)
             val isKnownHost = savedFingerprint != null
 
-            // Probe for host key without sending credentials
             var expectedFingerprint = savedFingerprint
             if (!hostKeyAlreadyAccepted) {
                 val probe = jsch.getSession(username, host, port)
@@ -84,7 +72,6 @@ class SshManager {
                 try {
                     probe.connect()
                 } catch (_: Exception) {
-                    // "none" auth always fails, but we got the host key
                 }
                 val probeKey = probe.hostKey
                 probe.disconnect()
@@ -109,14 +96,13 @@ class SshManager {
                 expectedFingerprint = fingerprint
             }
 
-            // Authenticated connection — host key was verified by probe
             val s = jsch.getSession(username, host, port)
             if (password != null) {
                 s.setPassword(password)
             }
             val config = Properties()
             config["StrictHostKeyChecking"] = "no"
-            config["PreferredAuthentications"] = if (keyManager?.hasKey() == true) {
+            config["PreferredAuthentications"] = if (privateKeyBytes != null) {
                 "publickey,password"
             } else {
                 "password"
@@ -125,7 +111,6 @@ class SshManager {
             s.timeout = 10_000
             s.connect()
 
-            // Re-verify fingerprint matches what the probe saw
             val hostKey = s.hostKey
             val fingerprint = hostKey.getFingerPrint(jsch)
             if (expectedFingerprint != null && fingerprint != expectedFingerprint) {

@@ -11,7 +11,7 @@ android {
 
     defaultConfig {
         applicationId = "com.anchor.app"
-        minSdk = 26
+        minSdk = 28
         targetSdk = 35
         versionCode = 5
         versionName = "0.3.1"
@@ -54,6 +54,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.navigation:navigation-compose:2.8.5")
     implementation("com.github.mwiede:jsch:0.2.21")
+    implementation("androidx.biometric:biometric:1.1.0")
     implementation("org.bouncycastle:bcprov-jdk18on:1.79")
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")

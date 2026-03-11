@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.anchor.app.data.AppDatabase
 import com.anchor.app.data.Host
+import com.anchor.app.ssh.BiometricKeyInvalidatedException
 import com.anchor.app.ssh.HostKeyInfo
 import com.anchor.app.ssh.HostKeyStore
 import com.anchor.app.ssh.KeyManager
@@ -17,6 +18,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import javax.crypto.Cipher
 
 data class HostKeyPrompt(
     val host: String,
@@ -25,6 +27,18 @@ data class HostKeyPrompt(
     val fingerprint: String,
     val isChanged: Boolean,
     val oldFingerprint: String? = null
+)
+
+sealed class BiometricPurpose {
+    data object Connect : BiometricPurpose()
+    data object Generate : BiometricPurpose()
+    data object Migrate : BiometricPurpose()
+}
+
+data class BiometricRequest(
+    val cipher: Cipher,
+    val purpose: BiometricPurpose,
+    val subtitle: String
 )
 
 sealed class UiState {
@@ -65,10 +79,9 @@ sealed class UiState {
 }
 
 class AnchorViewModel(application: Application) : AndroidViewModel(application) {
-    private val keyManager = KeyManager(application)
+    val keyManager = KeyManager(application)
     private val hostKeyStore = HostKeyStore(application)
     private val ssh = SshManager().also {
-        it.keyManager = keyManager
         it.hostKeyStore = hostKeyStore
     }
     private val db = AppDatabase.getInstance(application)
@@ -77,12 +90,18 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
     private val _uiState = MutableStateFlow<UiState>(UiState.HostList(hasKey = keyManager.hasKey()))
     val uiState: StateFlow<UiState> = _uiState
 
+    private val _biometricRequest = MutableStateFlow<BiometricRequest?>(null)
+    val biometricRequest: StateFlow<BiometricRequest?> = _biometricRequest
+
     private var pollJob: Job? = null
     private var hostLabel: String = ""
 
     private var pendingHost: Host? = null
     private var pendingPassword: String? = null
     private var pendingAction: String = ""
+
+    // Decrypted key bytes held in memory only during connection flow
+    private var decryptedKeyBytes: ByteArray? = null
 
     init {
         viewModelScope.launch {
@@ -108,14 +127,119 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
                 passwordPrompt = false
             ) ?: return@launch
 
-            doConnect(false)
+            when {
+                keyManager.needsMigration() -> requestBiometric(
+                    BiometricPurpose.Migrate,
+                    "Secure your existing SSH key"
+                )
+                keyManager.hasEncryptedKey() -> requestBiometric(
+                    BiometricPurpose.Connect,
+                    "Authenticate to connect to ${host.label}"
+                )
+                else -> doConnect(false)
+            }
         }
+    }
+
+    private fun requestBiometric(purpose: BiometricPurpose, subtitle: String) {
+        try {
+            val cipher = when (purpose) {
+                is BiometricPurpose.Connect -> keyManager.getDecryptionCipher()
+                is BiometricPurpose.Generate -> keyManager.getEncryptionCipher()
+                is BiometricPurpose.Migrate -> keyManager.getEncryptionCipher()
+            }
+            _biometricRequest.value = BiometricRequest(cipher, purpose, subtitle)
+        } catch (e: BiometricKeyInvalidatedException) {
+            handleBiometricKeyInvalidated(e.message ?: "Biometric key invalidated")
+        } catch (e: Exception) {
+            handleBiometricError("Failed to prepare authentication: ${e.message}")
+        }
+    }
+
+    fun onBiometricSuccess(cipher: Cipher) {
+        val request = _biometricRequest.value ?: return
+        _biometricRequest.value = null
+
+        when (request.purpose) {
+            is BiometricPurpose.Connect -> {
+                decryptedKeyBytes = keyManager.decryptPrivateKey(cipher)
+                viewModelScope.launch { doConnect(false) }
+            }
+            is BiometricPurpose.Generate -> {
+                viewModelScope.launch {
+                    val hosts = hostDao.getAll().first()
+                    val result = keyManager.generateKey(cipher)
+                    result.fold(
+                        onSuccess = { pubKey ->
+                            _uiState.value = UiState.KeySetup(
+                                hasKey = true,
+                                publicKey = pubKey,
+                                hosts = hosts
+                            )
+                        },
+                        onFailure = { e ->
+                            Log.e("Anchor", "Key generation failed", e)
+                            _uiState.value = UiState.KeySetup(
+                                hasKey = keyManager.hasKey(),
+                                publicKey = keyManager.getPublicKeyString(),
+                                error = e.message ?: "Key generation failed",
+                                hosts = hosts
+                            )
+                        }
+                    )
+                }
+            }
+            is BiometricPurpose.Migrate -> {
+                decryptedKeyBytes = keyManager.migrateKey(cipher)
+                viewModelScope.launch { doConnect(false) }
+            }
+        }
+    }
+
+    fun onBiometricError(error: String) {
+        _biometricRequest.value = null
+        when (val state = _uiState.value) {
+            is UiState.HostList -> {
+                _uiState.value = state.copy(isConnecting = false, error = error)
+            }
+            is UiState.KeySetup -> {
+                _uiState.value = state.copy(isGenerating = false, error = error)
+            }
+            else -> {}
+        }
+    }
+
+    fun onBiometricCancelled() {
+        _biometricRequest.value = null
+        when (val state = _uiState.value) {
+            is UiState.HostList -> {
+                _uiState.value = state.copy(isConnecting = false)
+            }
+            is UiState.KeySetup -> {
+                _uiState.value = state.copy(isGenerating = false)
+            }
+            else -> {}
+        }
+    }
+
+    private fun clearDecryptedKey() {
+        decryptedKeyBytes?.fill(0)
+        decryptedKeyBytes = null
     }
 
     private suspend fun doConnect(hostKeyAccepted: Boolean) {
         val host = pendingHost ?: return
-        when (val result = ssh.connect(host.hostname, host.port, host.username, pendingPassword, hostKeyAccepted)) {
+        val result = ssh.connect(
+            host.hostname,
+            host.port,
+            host.username,
+            pendingPassword,
+            hostKeyAccepted,
+            decryptedKeyBytes
+        )
+        when (result) {
             is SshManager.ConnectResult.Success -> {
+                clearDecryptedKey()
                 pendingPassword = null
                 hostDao.updateLastConnected(host.id, System.currentTimeMillis())
                 hostLabel = "${host.username}@${host.hostname}"
@@ -123,6 +247,7 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
                 refreshSessions()
             }
             is SshManager.ConnectResult.NeedsHostKeyConfirmation -> {
+                // Keep decryptedKeyBytes alive for retry after host key acceptance
                 val info = result.info
                 val prompt = HostKeyPrompt(info.host, info.port, info.keyType, info.fingerprint, info.isChanged, info.oldFingerprint)
                 val hosts = hostDao.getAll().first()
@@ -133,6 +258,7 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
                 )
             }
             is SshManager.ConnectResult.Failed -> {
+                clearDecryptedKey()
                 val hosts = hostDao.getAll().first()
                 val needsPassword = result.error.contains("Auth fail", ignoreCase = true) && pendingPassword == null
                 pendingPassword = null
@@ -189,6 +315,7 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun rejectHostKey() {
+        clearDecryptedKey()
         viewModelScope.launch {
             val error = "Connection rejected: host key not trusted"
             when (pendingAction) {
@@ -235,6 +362,7 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
     fun goHome() {
         stopPolling()
         ssh.disconnect()
+        clearDecryptedKey()
         pendingPassword = null
         viewModelScope.launch {
             val hosts = hostDao.getAll().first()
@@ -256,22 +384,19 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
             if (current is UiState.KeySetup) {
                 _uiState.value = current.copy(isGenerating = true, error = null)
             }
-            val hosts = hostDao.getAll().first()
-            val result = keyManager.generateKey()
-            result.fold(
-                onSuccess = { pubKey ->
-                    _uiState.value = UiState.KeySetup(hasKey = true, publicKey = pubKey, hosts = hosts)
-                },
-                onFailure = { e ->
-                    Log.e("Anchor", "Key generation failed", e)
-                    _uiState.value = UiState.KeySetup(
-                        hasKey = keyManager.hasKey(),
-                        publicKey = keyManager.getPublicKeyString(),
-                        error = e.message ?: "Key generation failed",
-                        hosts = hosts
-                    )
-                }
-            )
+
+            if (!keyManager.isBiometricAvailable()) {
+                val hosts = hostDao.getAll().first()
+                _uiState.value = UiState.KeySetup(
+                    hasKey = keyManager.hasKey(),
+                    publicKey = keyManager.getPublicKeyString(),
+                    error = "Biometric authentication required. Please set up fingerprint in device settings.",
+                    hosts = hosts
+                )
+                return@launch
+            }
+
+            requestBiometric(BiometricPurpose.Generate, "Authenticate to generate SSH key")
         }
     }
 
@@ -292,6 +417,7 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
     private suspend fun doDeploy(hostKeyAccepted: Boolean) {
         val host = pendingHost ?: return
         val hosts = hostDao.getAll().first()
+        // Deploy uses password auth — no private key needed
         when (val result = ssh.connect(host.hostname, host.port, host.username, pendingPassword, hostKeyAccepted)) {
             is SshManager.ConnectResult.Success -> {
                 pendingPassword = null
@@ -320,6 +446,29 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
                 _uiState.value = UiState.KeySetup(hasKey = keyManager.hasKey(), publicKey = keyManager.getPublicKeyString(), error = result.error, hosts = hosts)
             }
         }
+    }
+
+    private fun handleBiometricKeyInvalidated(message: String) {
+        viewModelScope.launch {
+            when (val state = _uiState.value) {
+                is UiState.HostList -> {
+                    _uiState.value = state.copy(isConnecting = false, error = message)
+                }
+                is UiState.KeySetup -> {
+                    _uiState.value = state.copy(
+                        isGenerating = false,
+                        error = message,
+                        hasKey = keyManager.hasKey(),
+                        publicKey = keyManager.getPublicKeyString()
+                    )
+                }
+                else -> {}
+            }
+        }
+    }
+
+    private fun handleBiometricError(message: String) {
+        handleBiometricKeyInvalidated(message)
     }
 
     // Session management
@@ -399,6 +548,7 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
     fun disconnect() {
         stopPolling()
         ssh.disconnect()
+        clearDecryptedKey()
         viewModelScope.launch {
             val hosts = hostDao.getAll().first()
             _uiState.value = UiState.HostList(hosts = hosts, hasKey = keyManager.hasKey())
@@ -434,5 +584,6 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
         super.onCleared()
         stopPolling()
         ssh.disconnect()
+        clearDecryptedKey()
     }
 }

@@ -74,6 +74,8 @@ class KeyManager(private val context: Context) {
                 0,
                 KeyProperties.AUTH_BIOMETRIC_STRONG
             )
+        } else {
+            builder.setUserAuthenticationValidityDurationSeconds(0)
         }
 
         val keyGenerator = KeyGenerator.getInstance(
@@ -85,13 +87,20 @@ class KeyManager(private val context: Context) {
     }
 
     fun getEncryptionCipher(): Cipher {
-        ensureKeyStoreKey()
-        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
-        keyStore.load(null)
-        val key = keyStore.getKey(KEYSTORE_ALIAS, null)
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, key)
-        return cipher
+        try {
+            ensureKeyStoreKey()
+            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
+            keyStore.load(null)
+            val key = keyStore.getKey(KEYSTORE_ALIAS, null)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, key)
+            return cipher
+        } catch (e: KeyPermanentlyInvalidatedException) {
+            deleteEncryptedKey()
+            throw BiometricKeyInvalidatedException(
+                "Biometric enrollment changed. Please regenerate your SSH key."
+            )
+        }
     }
 
     fun getDecryptionCipher(): Cipher {
@@ -100,7 +109,14 @@ class KeyManager(private val context: Context) {
             val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
             keyStore.load(null)
             val key = keyStore.getKey(KEYSTORE_ALIAS, null)
-            val iv = ivFile().readBytes()
+            val ivf = ivFile()
+            if (!ivf.exists()) {
+                deleteEncryptedKey()
+                throw BiometricKeyInvalidatedException(
+                    "Encrypted key data is corrupt. Please regenerate your SSH key."
+                )
+            }
+            val iv = ivf.readBytes()
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
             return cipher

@@ -1,5 +1,7 @@
 package com.anchor.app
 
+import android.content.Context
+import android.content.ContextWrapper
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -159,7 +161,7 @@ fun BiometricGate(
 ) {
     if (request == null) return
 
-    val activity = LocalContext.current as FragmentActivity
+    val activity = LocalContext.current.findFragmentActivity() ?: return
 
     DisposableEffect(request) {
         val executor = ContextCompat.getMainExecutor(activity)
@@ -178,7 +180,8 @@ fun BiometricGate(
 
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
                     if (errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON ||
-                        errorCode == BiometricPrompt.ERROR_USER_CANCELED) {
+                        errorCode == BiometricPrompt.ERROR_USER_CANCELED ||
+                        errorCode == BiometricPrompt.ERROR_CANCELED) {
                         onCancelled()
                     } else {
                         onError(errString.toString())
@@ -238,4 +241,13 @@ fun PasswordPromptDialog(
             OutlinedButton(onClick = onDismiss) { Text("Cancel") }
         }
     )
+}
+
+private fun Context.findFragmentActivity(): FragmentActivity? {
+    var ctx = this
+    while (ctx is ContextWrapper) {
+        if (ctx is FragmentActivity) return ctx
+        ctx = ctx.baseContext
+    }
+    return null
 }

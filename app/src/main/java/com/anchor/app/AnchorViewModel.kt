@@ -18,6 +18,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import javax.crypto.Cipher
 
 data class HostKeyPrompt(
@@ -160,38 +162,47 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
         val request = _biometricRequest.value ?: return
         _biometricRequest.value = null
 
-        when (request.purpose) {
-            is BiometricPurpose.Connect -> {
-                decryptedKeyBytes = keyManager.decryptPrivateKey(cipher)
-                viewModelScope.launch { doConnect(false) }
-            }
-            is BiometricPurpose.Generate -> {
-                viewModelScope.launch {
-                    val hosts = hostDao.getAll().first()
-                    val result = keyManager.generateKey(cipher)
-                    result.fold(
-                        onSuccess = { pubKey ->
-                            _uiState.value = UiState.KeySetup(
-                                hasKey = true,
-                                publicKey = pubKey,
-                                hosts = hosts
-                            )
-                        },
-                        onFailure = { e ->
-                            Log.e("Anchor", "Key generation failed", e)
-                            _uiState.value = UiState.KeySetup(
-                                hasKey = keyManager.hasKey(),
-                                publicKey = keyManager.getPublicKeyString(),
-                                error = e.message ?: "Key generation failed",
-                                hosts = hosts
-                            )
+        viewModelScope.launch {
+            try {
+                when (request.purpose) {
+                    is BiometricPurpose.Connect -> {
+                        decryptedKeyBytes = withContext(Dispatchers.IO) {
+                            keyManager.decryptPrivateKey(cipher)
                         }
-                    )
+                        doConnect(false)
+                    }
+                    is BiometricPurpose.Generate -> {
+                        val hosts = hostDao.getAll().first()
+                        val result = keyManager.generateKey(cipher)
+                        result.fold(
+                            onSuccess = { pubKey ->
+                                _uiState.value = UiState.KeySetup(
+                                    hasKey = true,
+                                    publicKey = pubKey,
+                                    hosts = hosts
+                                )
+                            },
+                            onFailure = { e ->
+                                Log.e("Anchor", "Key generation failed", e)
+                                _uiState.value = UiState.KeySetup(
+                                    hasKey = keyManager.hasKey(),
+                                    publicKey = keyManager.getPublicKeyString(),
+                                    error = e.message ?: "Key generation failed",
+                                    hosts = hosts
+                                )
+                            }
+                        )
+                    }
+                    is BiometricPurpose.Migrate -> {
+                        decryptedKeyBytes = withContext(Dispatchers.IO) {
+                            keyManager.migrateKey(cipher)
+                        }
+                        doConnect(false)
+                    }
                 }
-            }
-            is BiometricPurpose.Migrate -> {
-                decryptedKeyBytes = keyManager.migrateKey(cipher)
-                viewModelScope.launch { doConnect(false) }
+            } catch (e: Exception) {
+                Log.e("Anchor", "Biometric operation failed", e)
+                onBiometricError(e.message ?: "Operation failed")
             }
         }
     }

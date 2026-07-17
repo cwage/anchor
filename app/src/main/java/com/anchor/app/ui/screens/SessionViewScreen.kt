@@ -16,10 +16,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.abs
@@ -30,6 +31,10 @@ private const val DEFAULT_FONT_SIZE = 14
 private const val MIN_FONT_SIZE = 8
 private const val MAX_FONT_SIZE = 28
 private const val CONTENT_PADDING_DP = 12
+
+// Sample rendered invisibly to learn the true character cell size; long
+// enough to average out per-glyph rounding
+private const val RULER_TEXT = "MMMMMMMM"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -48,7 +53,6 @@ fun SessionViewScreen(
     var input by remember { mutableStateOf("") }
     val scrollState = rememberScrollState()
     val density = LocalDensity.current
-    val textMeasurer = rememberTextMeasurer()
 
     LaunchedEffect(paneContent) {
         scrollState.animateScrollTo(scrollState.maxValue)
@@ -131,14 +135,36 @@ fun SessionViewScreen(
         ) {
             val availableWidthPx = with(density) { (maxWidth - (CONTENT_PADDING_DP * 2).dp).toPx() }
             val availableHeightPx = with(density) { (maxHeight - (CONTENT_PADDING_DP * 2).dp).toPx() }
-            val style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = fontSize.sp, lineHeight = (fontSize + 4).sp)
-            val charWidth = textMeasurer.measure("M", style).size.width
-            val lineHeight = textMeasurer.measure("M", style).size.height
-            val cols = if (charWidth > 0) (availableWidthPx / charWidth).toInt().coerceAtLeast(20) else 80
-            val rows = if (lineHeight > 0) (availableHeightPx / lineHeight).toInt().coerceAtLeast(10) else 24
+            val style = TextStyle(
+                fontFamily = FontFamily.Monospace,
+                fontSize = fontSize.sp,
+                lineHeight = (fontSize + 4).sp,
+                letterSpacing = 0.sp
+            )
 
-            LaunchedEffect(cols, rows) {
-                onResizePane(cols, rows)
+            // Character cell size must come from a real rendered Text, not
+            // TextMeasurer: measuring disagrees with rendering when a system
+            // font scale is set (and Text() merges the theme's letterSpacing),
+            // which made cols overshoot what the screen can display.
+            var rulerSize by remember { mutableStateOf(IntSize.Zero) }
+            Text(
+                text = RULER_TEXT,
+                style = style,
+                maxLines = 1,
+                softWrap = false,
+                onTextLayout = { rulerSize = it.size },
+                modifier = Modifier
+                    .wrapContentSize(unbounded = true)
+                    .alpha(0f)
+            )
+
+            if (rulerSize.width > 0 && rulerSize.height > 0) {
+                val charWidth = rulerSize.width.toFloat() / RULER_TEXT.length
+                val cols = (availableWidthPx / charWidth).toInt().coerceAtLeast(20)
+                val rows = (availableHeightPx / rulerSize.height).toInt().coerceAtLeast(10)
+                LaunchedEffect(cols, rows) {
+                    onResizePane(cols, rows)
+                }
             }
 
             val swipeThreshold = with(density) { 80.dp.toPx() }
@@ -166,9 +192,7 @@ fun SessionViewScreen(
             ) {
                 Text(
                     text = paneContent.ifBlank { "(empty)" },
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = fontSize.sp,
-                    lineHeight = (fontSize + 4).sp,
+                    style = style,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(CONTENT_PADDING_DP.dp)

@@ -185,7 +185,12 @@ class SshManager {
     suspend fun resizePane(sessionName: String, cols: Int, rows: Int): Result<String> {
         val safeCols = cols.coerceIn(1, 500)
         val safeRows = rows.coerceIn(1, 500)
-        return exec("tmux resize-window -t ${shellEscape(sessionName)} -x $safeCols -y $safeRows")
+        val target = shellEscape(sessionName)
+        // Follow the resize with Ctrl-L: full-screen TUIs repaint on SIGWINCH
+        // but often leave stale rows wrapped at the old width behind, and
+        // Ctrl-L is the near-universal "redraw yourself" key (worst case, a
+        // shell prompt clears its screen).
+        return exec("tmux resize-window -t $target -x $safeCols -y $safeRows && tmux send-keys -t $target C-l")
     }
 
     // resize-window -x/-y sets the per-window window-size option to "manual",

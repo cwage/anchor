@@ -34,20 +34,41 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ### Emulator setup (Linux with KVM)
 
-The emulator runs on the host (not in Docker) for GPU/KVM support:
+The emulator runs on the host (not in Docker) for GPU/KVM support. Install
+the emulator and system image once:
 
 ```sh
-# Install emulator and system image
 sdkmanager --install "emulator" "system-images;android-35;google_apis;x86_64"
-
-# Create AVD
-avdmanager create avd -n anchor_test -k "system-images;android-35;google_apis;x86_64" -d "pixel_9"
-
-# Run (enable keyboard input)
-emulator -avd anchor_test -gpu auto
 ```
 
-To enable hardware keyboard in the emulator, add `hw.keyboard = yes` to `~/.android/avd/anchor_test.avd/config.ini`.
+Then bootstrap everything else with:
+
+```sh
+./scripts/setup-emulator.sh
+```
+
+The script is idempotent and handles the parts that are easy to get wrong:
+
+- Creates the `anchor` AVD (pixel_9, android-35) if it doesn't exist
+- Forces **host GPU rendering** (`hw.gpu.enabled=yes`, `hw.gpu.mode=host`) —
+  without this the emulator software-renders the entire screen and crawls
+  even on fast machines — and enables the hardware keyboard
+- Boots the emulator and waits for it
+- Sets a screen-lock PIN (`1111`) and **enrolls a virtual fingerprint** by
+  driving the Settings wizard via uiautomator. Without an enrolled
+  fingerprint, Anchor's biometric-gated key generation silently refuses to
+  run.
+- Disables the first-focus stylus promo popup and keeps the screen awake
+  so the emulator never sleeps or re-locks between interactions
+
+Whenever the app shows a fingerprint prompt, simulate a sensor touch with:
+
+```sh
+adb emu finger touch 1
+```
+
+To test against the host machine from inside the emulator, use hostname
+`10.0.2.2` (the emulator's alias for the host loopback).
 
 ## Usage
 

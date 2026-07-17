@@ -188,6 +188,18 @@ class SshManager {
         return exec("tmux resize-window -t ${shellEscape(sessionName)} -x $safeCols -y $safeRows")
     }
 
+    // resize-window -x/-y sets the per-window window-size option to "manual",
+    // which permanently disables auto-resize for other clients (issue #10).
+    // Unset it on every window in the session: font/orientation changes can
+    // resize whichever window is current, so more than one may be flagged.
+    suspend fun restoreWindowSize(sessionName: String): Result<String> {
+        val target = shellEscape(sessionName)
+        return exec(
+            "for w in \$(tmux list-windows -t $target -F '#{window_id}'); do " +
+                "tmux set-option -w -t \"\$w\" -u window-size; done"
+        )
+    }
+
     suspend fun nextWindow(sessionName: String): Result<String> {
         return exec("tmux next-window -t ${shellEscape(sessionName)}")
     }

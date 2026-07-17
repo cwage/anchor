@@ -371,11 +371,15 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun goHome() {
+        val state = _uiState.value
         stopPolling()
-        ssh.disconnect()
         clearDecryptedKey()
         pendingPassword = null
         viewModelScope.launch {
+            if (state is UiState.SessionView) {
+                ssh.restoreWindowSize(state.sessionName)
+            }
+            withContext(Dispatchers.IO) { ssh.disconnect() }
             val hosts = hostDao.getAll().first()
             _uiState.value = UiState.HostList(hosts = hosts, hasKey = keyManager.hasKey())
         }
@@ -509,9 +513,15 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun closeSession() {
+        val state = _uiState.value
         stopPolling()
         _uiState.value = UiState.SessionList(isLoading = true, hostLabel = hostLabel)
-        refreshSessions()
+        viewModelScope.launch {
+            if (state is UiState.SessionView) {
+                ssh.restoreWindowSize(state.sessionName)
+            }
+            refreshSessions()
+        }
     }
 
     fun resizePane(cols: Int, rows: Int) {
@@ -557,10 +567,14 @@ class AnchorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun disconnect() {
+        val state = _uiState.value
         stopPolling()
-        ssh.disconnect()
         clearDecryptedKey()
         viewModelScope.launch {
+            if (state is UiState.SessionView) {
+                ssh.restoreWindowSize(state.sessionName)
+            }
+            withContext(Dispatchers.IO) { ssh.disconnect() }
             val hosts = hostDao.getAll().first()
             _uiState.value = UiState.HostList(hosts = hosts, hasKey = keyManager.hasKey())
         }

@@ -62,18 +62,15 @@ To enable hardware keyboard in the emulator, add `hw.keyboard = yes` to `~/.andr
 
 Anchor resizes the tmux window to match your phone's screen width so content fits without overflow. This means if you have the same tmux session open on a desktop terminal, it will appear narrow while the phone is actively viewing it.
 
-To restore your desktop terminal size, detach and reattach:
+When you leave the session view or disconnect, Anchor automatically restores automatic sizing (it unsets the per-window `window-size` option that `tmux resize-window` implicitly sets to `manual`), so attached desktop terminals snap back to their own size.
+
+If Anchor is killed while viewing a session (so the restore never runs), windows stay stuck at the phone size. Fix it from any shell on the host:
 
 ```
-Ctrl-b d
-tmux attach -t <session>
+tmux list-windows -t <session> -F '#{window_id}' | xargs -I{} tmux set-option -w -t {} -u window-size
 ```
 
-Or from any shell with tmux attached at your desired size:
-
-```
-tmux resize-window -A -t <session>
-```
+Note that `tmux resize-window -A` is not sufficient — it restores the size once but leaves `window-size` set to `manual`, so auto-resize stays broken.
 
 ## Architecture
 

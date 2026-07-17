@@ -29,7 +29,7 @@ for tool in avdmanager emulator adb; do
 done
 
 # --- AVD creation ---------------------------------------------------------
-avd_dir="$HOME/.android/avd/${AVD_NAME}.avd"
+avd_dir="${ANDROID_AVD_HOME:-$HOME/.android/avd}/${AVD_NAME}.avd"
 if avdmanager list avd -c 2>/dev/null | grep -qx "$AVD_NAME"; then
     log "AVD '$AVD_NAME' already exists"
 else
@@ -60,16 +60,44 @@ set_ini hw.gpu.mode host
 set_ini hw.keyboard yes
 
 # --- Boot ------------------------------------------------------------------
-if adb get-state >/dev/null 2>&1; then
-    log "A device/emulator is already connected"
+# Every adb call below targets the emulator explicitly (via ANDROID_SERIAL)
+# so the PIN/enrollment steps can never touch a connected physical phone.
+emulator_serials() {
+    adb devices | awk '$1 ~ /^emulator-/ && $2 == "device" {print $1}'
+}
+
+if [ -n "${ANDROID_SERIAL:-}" ]; then
+    log "Using ANDROID_SERIAL=$ANDROID_SERIAL"
 else
-    log "Booting emulator (window should appear on your display)"
-    nohup emulator -avd "$AVD_NAME" -gpu host -no-snapshot-save >/tmp/anchor-emulator.log 2>&1 &
-    disown
+    count=$(emulator_serials | wc -l)
+    if [ "$count" -gt 1 ]; then
+        echo "ERROR: multiple emulators running; set ANDROID_SERIAL to one of:" >&2
+        emulator_serials >&2
+        exit 1
+    elif [ "$count" -eq 1 ]; then
+        ANDROID_SERIAL=$(emulator_serials)
+        export ANDROID_SERIAL
+        log "Using running emulator $ANDROID_SERIAL"
+    else
+        log "Booting emulator (window should appear on your display)"
+        nohup emulator -avd "$AVD_NAME" -gpu host -no-snapshot-save >/tmp/anchor-emulator.log 2>&1 &
+        disown
+        log "Waiting for emulator to appear in adb"
+        serial=""
+        for _ in $(seq 1 60); do
+            serial=$(emulator_serials | head -1)
+            [ -n "$serial" ] && break
+            sleep 2
+        done
+        if [ -z "$serial" ]; then
+            echo "ERROR: emulator never appeared in 'adb devices' (see /tmp/anchor-emulator.log)" >&2
+            exit 1
+        fi
+        export ANDROID_SERIAL="$serial"
+    fi
 fi
 
 log "Waiting for boot to complete"
-adb wait-for-device
 until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; do
     sleep 2
 done
@@ -98,8 +126,10 @@ if adb shell dumpsys fingerprint 2>/dev/null | grep -q '"prints":\[{'; then
 fi
 
 log "Setting screen-lock PIN ($PIN)"
-adb shell locksettings set-pin "$PIN" >/dev/null 2>&1 || \
-    log "PIN already set (leaving it alone; assuming it is $PIN)"
+if ! pin_out=$(adb shell locksettings set-pin "$PIN" 2>&1); then
+    log "WARNING: could not set PIN: ${pin_out:-no output}"
+    log "If the device already has a different PIN, the wizard's PIN step below will fail — this script only knows $PIN"
+fi
 
 # Dump the current UI and tap the center of the first element whose text
 # matches the given regex. Returns nonzero if not found.

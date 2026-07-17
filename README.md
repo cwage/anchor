@@ -67,7 +67,7 @@ When you leave the session view or disconnect, Anchor automatically restores aut
 If Anchor is killed while viewing a session (so the restore never runs), windows stay stuck at the phone size. Fix it from any shell on the host:
 
 ```
-tmux set-option -w -t <session> -u window-size
+tmux list-windows -t <session> -F '#{window_id}' | xargs -I{} tmux set-option -w -t {} -u window-size
 ```
 
 Note that `tmux resize-window -A` is not sufficient — it restores the size once but leaves `window-size` set to `manual`, so auto-resize stays broken.

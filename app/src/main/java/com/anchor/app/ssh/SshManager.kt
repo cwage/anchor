@@ -195,8 +195,8 @@ class SshManager {
     suspend fun restoreWindowSize(sessionName: String): Result<String> {
         val target = shellEscape(sessionName)
         return exec(
-            "for w in \$(tmux list-windows -t $target -F '#{window_id}'); do " +
-                "tmux set-option -w -t \"\$w\" -u window-size; done"
+            "wins=\$(tmux list-windows -t $target -F '#{window_id}') || exit 1; " +
+                "for w in \$wins; do tmux set-option -w -t \"\$w\" -u window-size || exit 1; done"
         )
     }
 
